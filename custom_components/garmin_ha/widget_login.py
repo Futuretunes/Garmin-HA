@@ -46,14 +46,40 @@ DI_SERVICE_URLS = (
     "https://connect.garmin.com/app",
 )
 
-_CSRF_RE = re.compile(r'name="_csrf"\s+value="([^"]+)"')
+_HIDDEN_INPUT_RE = re.compile(
+    r'<input\s+[^>]*type=["\']hidden["\'][^>]*/?>',
+    re.IGNORECASE,
+)
+_INPUT_NAME_RE = re.compile(r'name=["\']([^"\']+)["\']')
+_INPUT_VALUE_RE = re.compile(r'value=["\']([^"\']*)["\']')
 _TITLE_RE = re.compile(r"<title>([^<]+)</title>", re.IGNORECASE)
 _TICKET_RE = re.compile(r"embed\?ticket=([^\"&\s]+)")
 _TICKET_FALLBACK_RE = re.compile(r"ticket=([A-Za-z0-9_-]+)")
+_FORM_ACTION_RE = re.compile(
+    r'<form[^>]*id=["\']login-form["\'][^>]*action=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_FORM_ACTION_RE2 = re.compile(
+    r'<form[^>]*action=["\']([^"\']+)["\'][^>]*id=["\']login-form["\']',
+    re.IGNORECASE,
+)
+_RESPONSE_URL_RE = re.compile(r'var\s+response_url\s*=\s*["\']([^"\']+)["\']')
 
 
 class WidgetLoginError(Exception):
     """Widget SSO login failed."""
+
+
+def _extract_hidden_fields(html: str) -> dict[str, str]:
+    """Extract all hidden input fields from HTML."""
+    fields = {}
+    for match in _HIDDEN_INPUT_RE.finditer(html):
+        tag = match.group(0)
+        name_m = _INPUT_NAME_RE.search(tag)
+        value_m = _INPUT_VALUE_RE.search(tag)
+        if name_m:
+            fields[name_m.group(1)] = value_m.group(1) if value_m else ""
+    return fields
 
 
 class WidgetAuth:
@@ -75,14 +101,14 @@ class WidgetAuth:
 
         # Step 1: establish SSO cookies
         r = self._session.get(SSO_EMBED_URL, params=SSO_EMBED_PARAMS)
-        _LOGGER.warning("Widget SSO: embed response status=%s", r.status_code)
+        _LOGGER.warning("Widget SSO: embed status=%s", r.status_code)
         if r.status_code == 429:
             raise WidgetLoginError(
                 f"SSO embed endpoint returned 429: {r.text[:200]}"
             )
         r.raise_for_status()
 
-        # Step 2: get CSRF token from signin form
+        # Step 2: get signin form with all hidden fields
         r = self._session.get(
             SSO_SIGNIN_URL,
             params=SSO_EMBED_PARAMS,
@@ -91,24 +117,30 @@ class WidgetAuth:
         _LOGGER.warning("Widget SSO: signin page status=%s", r.status_code)
         r.raise_for_status()
 
-        csrf = self._extract_csrf(r.text)
-        if not csrf:
+        hidden_fields = _extract_hidden_fields(r.text)
+        _LOGGER.warning(
+            "Widget SSO: found hidden fields: %s",
+            list(hidden_fields.keys()),
+        )
+
+        if "_csrf" not in hidden_fields:
             _LOGGER.warning(
-                "Widget SSO: no CSRF token found, body[:500]=%s",
-                r.text[:500],
+                "Widget SSO: no _csrf in hidden fields, body[:1000]=%s",
+                r.text[:1000],
             )
             raise WidgetLoginError("Could not find CSRF token in SSO form")
 
-        # Step 3: POST credentials
+        # Step 3: POST credentials with all hidden fields
+        form_data = {**hidden_fields}
+        form_data["username"] = email
+        form_data["password"] = password
+        form_data["embed"] = "true"
+        form_data["_eventId"] = "submit"
+
         r = self._session.post(
             SSO_SIGNIN_URL,
             params=SSO_EMBED_PARAMS,
-            data={
-                "username": email,
-                "password": password,
-                "embed": "true",
-                "_csrf": csrf,
-            },
+            data=form_data,
             headers={"Referer": SSO_SIGNIN_URL},
         )
         _LOGGER.warning("Widget SSO: login POST status=%s", r.status_code)
@@ -122,16 +154,16 @@ class WidgetAuth:
 
         Returns token_data JSON.
         """
-        csrf = self._extract_csrf(self._last_html)
+        hidden_fields = _extract_hidden_fields(self._last_html)
+
+        form_data = {**hidden_fields}
+        form_data["mfa-code"] = mfa_code
+        form_data["embed"] = "true"
+        form_data["_eventId"] = "submit"
 
         r = self._session.post(
             SSO_MFA_URL,
-            data={
-                "mfa-code": mfa_code,
-                "embed": "true",
-                "_csrf": csrf or "",
-                "_eventId": "submit",
-            },
+            data=form_data,
             headers={"Referer": SSO_SIGNIN_URL},
         )
         r.raise_for_status()
@@ -145,26 +177,39 @@ class WidgetAuth:
     def _handle_response(self, response: cffi_requests.Response) -> str | None:
         """Process SSO response — extract ticket or detect MFA."""
         title = self._extract_title(response.text)
+        _LOGGER.warning("Widget SSO: response title=%r", title)
 
         # Detect MFA prompt
         if title and "mfa" in title.lower():
-            _LOGGER.debug("Widget SSO: MFA required")
+            _LOGGER.warning("Widget SSO: MFA required")
             return None
 
-        # Detect auth failures
+        # Detect auth failures from page title
         if title:
-            fail_words = ("locked", "invalid", "incorrect", "error", "failed")
+            fail_words = ("locked", "invalid", "incorrect", "failed")
             if any(w in title.lower() for w in fail_words):
                 raise WidgetLoginError(
-                    f"Authentication failed (SSO page title: {title!r})"
+                    f"Authentication failed (SSO title: {title!r})"
                 )
+
+        # Check for error messages in the HTML body
+        error_match = re.search(
+            r'class="error"[^>]*>([^<]+)<', response.text, re.IGNORECASE
+        )
+        if error_match:
+            error_msg = error_match.group(1).strip()
+            _LOGGER.warning("Widget SSO: form error message: %s", error_msg)
+            raise WidgetLoginError(
+                f"SSO returned error: {error_msg}"
+            )
 
         # Extract service ticket
         ticket = self._extract_ticket(response)
         if not ticket:
             _LOGGER.warning(
-                "Widget SSO: no ticket found. Title=%r, URL=%s, body[:500]=%s",
-                title, response.url, response.text[:500],
+                "Widget SSO: no ticket found. Title=%r, URL=%s, "
+                "body[:1000]=%s",
+                title, response.url, response.text[:1000],
             )
             raise WidgetLoginError(
                 "Could not extract service ticket from SSO response"
@@ -172,10 +217,6 @@ class WidgetAuth:
 
         _LOGGER.warning("Widget SSO: got service ticket, exchanging for tokens")
         return self._exchange_ticket(ticket)
-
-    def _extract_csrf(self, html: str) -> str | None:
-        m = _CSRF_RE.search(html)
-        return m.group(1) if m else None
 
     def _extract_title(self, html: str) -> str | None:
         m = _TITLE_RE.search(html)
@@ -186,6 +227,14 @@ class WidgetAuth:
         m = _TICKET_RE.search(response.text)
         if m:
             return m.group(1)
+
+        # Check for response_url JavaScript variable
+        m = _RESPONSE_URL_RE.search(response.text)
+        if m:
+            url = m.group(1)
+            tm = _TICKET_FALLBACK_RE.search(url)
+            if tm:
+                return tm.group(1)
 
         # Fallback: ticket in final URL after redirects
         m = _TICKET_FALLBACK_RE.search(response.url)
@@ -248,7 +297,7 @@ class WidgetAuth:
                         "di_refresh_token": data.get("refresh_token"),
                         "di_client_id": client_id,
                     })
-                    _LOGGER.info(
+                    _LOGGER.warning(
                         "Widget SSO login successful (client=%s, svc=%s)",
                         client_id, service_url,
                     )
