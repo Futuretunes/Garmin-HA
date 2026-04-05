@@ -1,0 +1,12 @@
+{
+  "domain": "garmin_ha",
+  "name": "Garmin HA",
+  "codeowners": [],
+  "dependencies": ["webhook"],
+  "documentation": "https://github.com/garmin-ha/garmin-ha",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": ["garminconnect==0.3.1"],
+  "version": "0.1.0",
+  "config_flow": true
+}

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<strings>
+    <string id="AppName">Garmin HA</string>
+    <string id="Lights">Lights</string>
+    <string id="Switches">Switches</string>
+    <string id="Climate">Climate</string>
+    <string id="Locks">Locks</string>
+    <string id="Sensors">Sensors</string>
+    <string id="Scenes">Scenes</string>
+    <string id="Scripts">Scripts</string>
+    <string id="Loading">Loading...</string>
+    <string id="Error">Error</string>
+    <string id="NoEntities">No entities found</string>
+    <string id="NotConnected">Phone not connected</string>
+    <string id="ConfigError">Check settings in\nGarmin Connect app</string>
+    <string id="SettingHAUrl">Home Assistant URL</string>
+    <string id="SettingWebhookId">Webhook ID</string>
+    <string id="SettingApiKey">API Key (optional)</string>
+    <string id="SettingRefreshInterval">Refresh Interval (sec)</string>
+</strings>

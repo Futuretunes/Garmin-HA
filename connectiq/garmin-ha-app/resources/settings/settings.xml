@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<settings>
+    <setting propertyKey="@Properties.ha_url" title="@Strings.SettingHAUrl">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+    <setting propertyKey="@Properties.webhook_id" title="@Strings.SettingWebhookId">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+    <setting propertyKey="@Properties.api_key" title="@Strings.SettingApiKey">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+    <setting propertyKey="@Properties.refresh_interval" title="@Strings.SettingRefreshInterval">
+        <settingConfig type="numeric" min="10" max="300"/>
+    </setting>
+</settings>

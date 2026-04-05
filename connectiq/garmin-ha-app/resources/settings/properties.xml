@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<properties>
+    <property id="ha_url" type="string"></property>
+    <property id="webhook_id" type="string"></property>
+    <property id="api_key" type="string"></property>
+    <property id="refresh_interval" type="number">30</property>
+</properties>

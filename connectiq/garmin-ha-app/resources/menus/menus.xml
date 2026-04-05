@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menus>
+    <menu2 id="MainMenu" title="@Strings.AppName">
+        <menu2-item id="menuLights" label="@Strings.Lights"/>
+        <menu2-item id="menuSwitches" label="@Strings.Switches"/>
+        <menu2-item id="menuClimate" label="@Strings.Climate"/>
+        <menu2-item id="menuLocks" label="@Strings.Locks"/>
+        <menu2-item id="menuSensors" label="@Strings.Sensors"/>
+        <menu2-item id="menuScenes" label="@Strings.Scenes"/>
+        <menu2-item id="menuScripts" label="@Strings.Scripts"/>
+    </menu2>
+</menus>
