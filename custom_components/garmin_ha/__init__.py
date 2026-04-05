@@ -5,13 +5,18 @@ from __future__ import annotations
 import logging
 import secrets
 
-from garminconnect import Garmin
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 
 from homeassistant.components.webhook import (
     async_register as webhook_register,
     async_unregister as webhook_unregister,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryAuthFailed
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
@@ -31,8 +36,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = Garmin()
     try:
         await hass.async_add_executor_job(client.login, token_data)
+    except GarminConnectTooManyRequestsError as err:
+        # garminconnect uses a "429" substring match which can misidentify errors.
+        # Log the full chain so we can see the real underlying HTTP status.
+        cause = err.__cause__
+        real_status = getattr(getattr(cause, "response", None), "status_code", None)
+        _LOGGER.error(
+            "Garmin login reported 429 (rate limit), but real HTTP status "
+            "may differ. Reported: %s | Underlying: %s (status=%s)",
+            err, cause, real_status,
+        )
+        raise ConfigEntryAuthFailed(
+            f"Garmin login error (reported as rate-limit, actual HTTP "
+            f"status={real_status}): {cause or err}"
+        ) from err
+    except GarminConnectAuthenticationError as err:
+        _LOGGER.error("Garmin authentication failed: %s", err)
+        raise ConfigEntryAuthFailed(str(err)) from err
+    except GarminConnectConnectionError as err:
+        _LOGGER.error("Garmin connection error: %s", err)
+        return False
     except Exception as err:
-        _LOGGER.error("Failed to login to Garmin Connect: %s", err)
+        _LOGGER.error(
+            "Unexpected Garmin login failure (%s): %s", type(err).__name__, err
+        )
         return False
 
     # Update stored tokens in case they were refreshed

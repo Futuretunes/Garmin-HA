@@ -61,7 +61,16 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             except GarminConnectAuthenticationError as err:
                 _LOGGER.error("Garmin auth failed: %s", err)
                 errors["base"] = "invalid_auth"
-            except GarminConnectTooManyRequestsError:
+            except GarminConnectTooManyRequestsError as err:
+                cause = err.__cause__
+                real_status = getattr(
+                    getattr(cause, "response", None), "status_code", None
+                )
+                _LOGGER.error(
+                    "Garmin login reported 429 (rate limit). "
+                    "Underlying error: %s (HTTP status=%s, type=%s)",
+                    cause, real_status, type(cause).__name__ if cause else "N/A",
+                )
                 errors["base"] = "too_many_requests"
             except GarminConnectConnectionError as err:
                 _LOGGER.error("Garmin connection failed: %s", err)
