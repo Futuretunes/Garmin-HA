@@ -47,7 +47,25 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
 
-            # Try standard garminconnect login first
+            # Try widget SSO first — it doesn't burn rate-limit quota
+            # like garminconnect's 4 login strategies do.
+            try:
+                self._widget_auth = WidgetAuth()
+                token_data = await self.hass.async_add_executor_job(
+                    self._widget_auth.login, self._email, self._password
+                )
+                if token_data is None:
+                    return await self.async_step_mfa()
+                return await self._async_finish_login_with_tokens(token_data)
+            except Exception as widget_err:
+                _LOGGER.warning(
+                    "Widget SSO login failed (%s: %s), "
+                    "falling back to standard login",
+                    type(widget_err).__name__, widget_err,
+                )
+                self._widget_auth = None
+
+            # Fallback: standard garminconnect login
             try:
                 self._client = Garmin(
                     self._email, self._password, return_on_mfa=True
@@ -61,45 +79,17 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 return await self._async_finish_login()
 
-            except (
-                GarminConnectTooManyRequestsError,
-                GarminConnectAuthenticationError,
-            ) as err:
-                # Both 429 and auth errors can be false positives from
-                # garminconnect's string-based error classification.
-                # Fall through to widget SSO fallback.
-                _LOGGER.warning(
-                    "Standard Garmin login failed (%s: %s), "
-                    "trying widget SSO fallback",
-                    type(err).__name__, err,
-                )
+            except GarminConnectAuthenticationError as err:
+                _LOGGER.error("Garmin auth failed: %s", err)
+                errors["base"] = "invalid_auth"
+            except GarminConnectTooManyRequestsError:
+                errors["base"] = "too_many_requests"
             except GarminConnectConnectionError as err:
                 _LOGGER.error("Garmin connection failed: %s", err)
                 errors["base"] = "cannot_connect"
-                return self._show_user_form(errors)
             except Exception:
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
-                return self._show_user_form(errors)
-
-            # Widget SSO fallback — bypasses clientId-based rate limiting
-            try:
-                self._widget_auth = WidgetAuth()
-                token_data = await self.hass.async_add_executor_job(
-                    self._widget_auth.login, self._email, self._password
-                )
-                if token_data is None:
-                    # MFA required
-                    return await self.async_step_mfa()
-                return await self._async_finish_login_with_tokens(token_data)
-            except WidgetLoginError as widget_err:
-                _LOGGER.error("Widget SSO fallback failed: %s", widget_err)
-                self._widget_auth = None
-                errors["base"] = "invalid_auth"
-            except Exception:
-                _LOGGER.exception("Widget SSO fallback crashed")
-                self._widget_auth = None
-                errors["base"] = "invalid_auth"
 
         return self._show_user_form(errors)
 
