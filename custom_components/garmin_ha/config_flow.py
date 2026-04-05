@@ -47,29 +47,11 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
 
-            # Strategy 1: China SSO servers — no Cloudflare rate limiting
+            # Strategy 1: Widget SSO (single request, no clientId).
+            # If this hits 429, stop immediately — don't cascade to
+            # garminconnect which would burn 4+ more requests and
+            # make the rate limit worse.
             try:
-                _LOGGER.warning("Trying Garmin CN servers")
-                self._client = Garmin(
-                    self._email, self._password,
-                    is_cn=True, return_on_mfa=True,
-                )
-                mfa_status, _ = await self.hass.async_add_executor_job(
-                    self._client.login
-                )
-                if mfa_status is not None:
-                    return await self.async_step_mfa()
-                return await self._async_finish_login()
-            except Exception as cn_err:
-                _LOGGER.warning(
-                    "Garmin CN login failed (%s: %s), trying widget SSO",
-                    type(cn_err).__name__, cn_err,
-                )
-                self._client = None
-
-            # Strategy 2: Widget SSO (single request, no clientId)
-            try:
-                _LOGGER.warning("Trying widget SSO")
                 self._widget_auth = WidgetAuth()
                 token_data = await self.hass.async_add_executor_job(
                     self._widget_auth.login, self._email, self._password
@@ -77,16 +59,28 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
                 if token_data is None:
                     return await self.async_step_mfa()
                 return await self._async_finish_login_with_tokens(token_data)
+            except WidgetLoginError as widget_err:
+                err_msg = str(widget_err)
+                self._widget_auth = None
+                if "429" in err_msg or "rate limit" in err_msg.lower():
+                    _LOGGER.error(
+                        "Garmin SSO is rate limiting your IP. "
+                        "Stop retrying and wait a few hours: %s",
+                        widget_err,
+                    )
+                    errors["base"] = "too_many_requests"
+                    return self._show_user_form(errors)
+                _LOGGER.warning("Widget SSO failed: %s", widget_err)
             except Exception as widget_err:
                 _LOGGER.warning(
-                    "Widget SSO failed (%s: %s), trying standard login",
+                    "Widget SSO failed (%s: %s)",
                     type(widget_err).__name__, widget_err,
                 )
                 self._widget_auth = None
 
-            # Strategy 3: Standard garminconnect (global servers)
+            # Strategy 2: Standard garminconnect (global servers).
+            # Only reached if widget SSO failed for non-rate-limit reasons.
             try:
-                _LOGGER.warning("Trying standard Garmin login")
                 self._client = Garmin(
                     self._email, self._password, return_on_mfa=True
                 )

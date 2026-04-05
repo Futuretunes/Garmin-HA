@@ -20,7 +20,7 @@
     "error": {
       "invalid_auth": "Authentication failed — check HA logs for details",
       "invalid_mfa": "Invalid verification code",
-      "too_many_requests": "Too many login attempts — wait a few minutes and try again",
+      "too_many_requests": "Garmin is rate limiting your IP. Stop retrying and wait at least 2 hours before trying again. Each retry makes it worse.",
       "cannot_connect": "Could not connect to Garmin — check HA logs for details",
       "unknown": "An unexpected error occurred — check HA logs for details"
     },
