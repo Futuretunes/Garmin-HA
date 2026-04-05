@@ -30,6 +30,10 @@ SSO_EMBED_PARAMS = {
     "id": "gauth-widget",
     "embedWidget": "true",
     "gauthHost": SSO_BASE,
+    "service": "https://connect.garmin.com/modern/",
+    "source": SSO_BASE,
+    "redirectAfterAccountLoginUrl": "https://connect.garmin.com/modern/",
+    "redirectAfterAccountCreationUrl": "https://connect.garmin.com/modern/",
 }
 
 DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
@@ -56,11 +60,7 @@ _TITLE_RE = re.compile(r"<title>([^<]+)</title>", re.IGNORECASE)
 _TICKET_RE = re.compile(r"embed\?ticket=([^\"&\s]+)")
 _TICKET_FALLBACK_RE = re.compile(r"ticket=([A-Za-z0-9_-]+)")
 _FORM_ACTION_RE = re.compile(
-    r'<form[^>]*id=["\']login-form["\'][^>]*action=["\']([^"\']+)["\']',
-    re.IGNORECASE,
-)
-_FORM_ACTION_RE2 = re.compile(
-    r'<form[^>]*action=["\']([^"\']+)["\'][^>]*id=["\']login-form["\']',
+    r'<form[^>]*action=["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
 _RESPONSE_URL_RE = re.compile(r'var\s+response_url\s*=\s*["\']([^"\']+)["\']')
@@ -117,16 +117,25 @@ class WidgetAuth:
         _LOGGER.warning("Widget SSO: signin page status=%s", r.status_code)
         r.raise_for_status()
 
-        hidden_fields = _extract_hidden_fields(r.text)
+        signin_html = r.text
+        hidden_fields = _extract_hidden_fields(signin_html)
         _LOGGER.warning(
-            "Widget SSO: found hidden fields: %s",
-            list(hidden_fields.keys()),
+            "Widget SSO: hidden fields: %s",
+            {k: v[:20] + "..." if len(v) > 20 else v
+             for k, v in hidden_fields.items()},
         )
+
+        # Extract form action URL if present
+        form_action = None
+        action_m = _FORM_ACTION_RE.search(signin_html)
+        if action_m:
+            form_action = action_m.group(1)
+            _LOGGER.warning("Widget SSO: form action=%s", form_action)
 
         if "_csrf" not in hidden_fields:
             _LOGGER.warning(
                 "Widget SSO: no _csrf in hidden fields, body[:1000]=%s",
-                r.text[:1000],
+                signin_html[:1000],
             )
             raise WidgetLoginError("Could not find CSRF token in SSO form")
 
@@ -137,8 +146,11 @@ class WidgetAuth:
         form_data["embed"] = "true"
         form_data["_eventId"] = "submit"
 
+        # Use form action URL if found, otherwise fall back to signin URL
+        post_url = form_action if form_action else SSO_SIGNIN_URL
+
         r = self._session.post(
-            SSO_SIGNIN_URL,
+            post_url,
             params=SSO_EMBED_PARAMS,
             data=form_data,
             headers={"Referer": SSO_SIGNIN_URL},
@@ -196,9 +208,16 @@ class WidgetAuth:
         error_match = re.search(
             r'class="error"[^>]*>([^<]+)<', response.text, re.IGNORECASE
         )
+        if not error_match:
+            error_match = re.search(
+                r'class="alert[^"]*"[^>]*>([^<]+)<', response.text, re.IGNORECASE
+            )
         if error_match:
             error_msg = error_match.group(1).strip()
-            _LOGGER.warning("Widget SSO: form error message: %s", error_msg)
+            _LOGGER.warning(
+                "Widget SSO: form error: %s | body[:2000]=%s",
+                error_msg, response.text[:2000],
+            )
             raise WidgetLoginError(
                 f"SSO returned error: {error_msg}"
             )
