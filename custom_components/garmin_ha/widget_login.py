@@ -3,6 +3,9 @@
 Bypasses clientId-based rate limiting by using the HTML form-based SSO
 embed widget endpoint, which does not send a clientId parameter.
 
+Uses curl_cffi to impersonate Chrome's TLS fingerprint so Cloudflare
+does not block the requests.
+
 Based on the approach described in:
 https://github.com/cyberjunky/python-garminconnect/issues/344
 """
@@ -14,7 +17,7 @@ import logging
 import re
 from base64 import b64encode
 
-import requests
+from curl_cffi import requests as cffi_requests
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,12 +46,6 @@ DI_SERVICE_URLS = (
     "https://connect.garmin.com/app",
 )
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
-
 _CSRF_RE = re.compile(r'name="_csrf"\s+value="([^"]+)"')
 _TITLE_RE = re.compile(r"<title>([^<]+)</title>", re.IGNORECASE)
 _TICKET_RE = re.compile(r"embed\?ticket=([^\"&\s]+)")
@@ -63,8 +60,9 @@ class WidgetAuth:
     """Handles authentication via the SSO embed widget form."""
 
     def __init__(self) -> None:
-        self._session = requests.Session()
-        self._session.headers["User-Agent"] = USER_AGENT
+        self._session = cffi_requests.Session(
+            impersonate="chrome", timeout=30
+        )
         self._last_html: str = ""
 
     def login(self, email: str, password: str) -> str | None:
@@ -74,9 +72,11 @@ class WidgetAuth:
         (call submit_mfa next).
         """
         # Step 1: establish SSO cookies
-        r = self._session.get(
-            SSO_EMBED_URL, params=SSO_EMBED_PARAMS, timeout=30
-        )
+        r = self._session.get(SSO_EMBED_URL, params=SSO_EMBED_PARAMS)
+        if r.status_code == 429:
+            raise WidgetLoginError(
+                f"SSO embed endpoint returned 429: {r.text[:200]}"
+            )
         r.raise_for_status()
 
         # Step 2: get CSRF token from signin form
@@ -84,12 +84,15 @@ class WidgetAuth:
             SSO_SIGNIN_URL,
             params=SSO_EMBED_PARAMS,
             headers={"Referer": SSO_EMBED_URL},
-            timeout=30,
         )
         r.raise_for_status()
 
         csrf = self._extract_csrf(r.text)
         if not csrf:
+            _LOGGER.debug(
+                "Widget SSO: no CSRF token found, body[:500]=%s",
+                r.text[:500],
+            )
             raise WidgetLoginError("Could not find CSRF token in SSO form")
 
         # Step 3: POST credentials
@@ -103,7 +106,6 @@ class WidgetAuth:
                 "_csrf": csrf,
             },
             headers={"Referer": SSO_SIGNIN_URL},
-            timeout=30,
         )
         r.raise_for_status()
         self._last_html = r.text
@@ -126,7 +128,6 @@ class WidgetAuth:
                 "_eventId": "submit",
             },
             headers={"Referer": SSO_SIGNIN_URL},
-            timeout=30,
         )
         r.raise_for_status()
         self._last_html = r.text
@@ -136,7 +137,7 @@ class WidgetAuth:
             raise WidgetLoginError("MFA verification failed")
         return result
 
-    def _handle_response(self, response: requests.Response) -> str | None:
+    def _handle_response(self, response: cffi_requests.Response) -> str | None:
         """Process SSO response — extract ticket or detect MFA."""
         title = self._extract_title(response.text)
 
@@ -175,7 +176,7 @@ class WidgetAuth:
         m = _TITLE_RE.search(html)
         return m.group(1).strip() if m else None
 
-    def _extract_ticket(self, response: requests.Response) -> str | None:
+    def _extract_ticket(self, response: cffi_requests.Response) -> str | None:
         # Primary: ticket in embed response body (embed?ticket=...)
         m = _TICKET_RE.search(response.text)
         if m:
@@ -214,9 +215,8 @@ class WidgetAuth:
                             "grant_type": DI_GRANT_TYPE,
                             "service_url": service_url,
                         },
-                        timeout=30,
                     )
-                except requests.RequestException as exc:
+                except Exception as exc:
                     _LOGGER.debug("DI exchange request failed: %s", exc)
                     last_error = exc
                     continue
