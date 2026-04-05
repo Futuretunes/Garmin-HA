@@ -156,6 +156,11 @@ class WidgetAuth:
             headers={"Referer": SSO_SIGNIN_URL},
         )
         _LOGGER.warning("Widget SSO: login POST status=%s", r.status_code)
+        if r.status_code == 429:
+            raise WidgetLoginError(
+                "SSO login rate limited (429). Your email+IP is throttled "
+                "from too many attempts. Wait a few hours before trying again."
+            )
         r.raise_for_status()
         self._last_html = r.text
 
