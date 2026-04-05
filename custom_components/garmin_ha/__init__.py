@@ -30,14 +30,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client = Garmin()
     try:
-        await hass.async_add_executor_job(client.garth.loads, token_data)
-        await hass.async_add_executor_job(client.login)
+        await hass.async_add_executor_job(client.login, token_data)
     except Exception as err:
         _LOGGER.error("Failed to login to Garmin Connect: %s", err)
         return False
 
     # Update stored tokens in case they were refreshed
-    new_token_data = await hass.async_add_executor_job(client.garth.dumps)
+    new_token_data = await hass.async_add_executor_job(client.client.dumps)
     if new_token_data != token_data:
         hass.config_entries.async_update_entry(
             entry,
