@@ -18,9 +18,11 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid credentials",
+      "invalid_auth": "Authentication failed — check HA logs for details",
       "invalid_mfa": "Invalid verification code",
-      "unknown": "An unexpected error occurred"
+      "too_many_requests": "Too many login attempts — wait a few minutes and try again",
+      "cannot_connect": "Could not connect to Garmin — check HA logs for details",
+      "unknown": "An unexpected error occurred — check HA logs for details"
     },
     "abort": {
       "already_configured": "This account is already configured"

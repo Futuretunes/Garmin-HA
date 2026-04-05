@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from garminconnect import Garmin, GarminConnectAuthenticationError
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
@@ -53,8 +58,14 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 return await self._async_finish_login()
 
-            except GarminConnectAuthenticationError:
+            except GarminConnectAuthenticationError as err:
+                _LOGGER.error("Garmin auth failed: %s", err)
                 errors["base"] = "invalid_auth"
+            except GarminConnectTooManyRequestsError:
+                errors["base"] = "too_many_requests"
+            except GarminConnectConnectionError as err:
+                _LOGGER.error("Garmin connection failed: %s", err)
+                errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
