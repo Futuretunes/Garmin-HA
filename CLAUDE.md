@@ -21,10 +21,10 @@ Garmin Watch App  <--webhook HTTP-->  HA Integration (webhook.py)  <-->  HA enti
 ### HA Integration (`custom_components/garmin_ha/`)
 
 - **Python, uses `garminconnect` library (v0.3.1)** and Home Assistant's `DataUpdateCoordinator` pattern
-- `__init__.py` — Entry setup: authenticates via Garth tokens, creates coordinator, registers webhook
+- `__init__.py` — Entry setup: authenticates via stored tokens (`client.login(token_data)`), creates coordinator, registers webhook
 - `coordinator.py` — `GarminHACoordinator` fetches 10 data sources from Garmin Connect (daily summary, heart rate, body battery, stress, sleep, SpO2, respiration, training readiness, HRV, last activity). Supports dot-separated nested key resolution for values like `sleepScores.overall.value`
 - `sensor.py` — Creates `CoordinatorEntity`-based sensors. All sensor definitions live in `const.py` as `GarminSensorEntityDescription` tuples grouped by data source
-- `config_flow.py` — Credentials-based setup storing Garth token data (not raw passwords) in config entries
+- `config_flow.py` — Two-step config flow: credentials then MFA if required. Stores token data (not raw passwords) in config entries. Handles `GarminConnectAuthenticationError`, `GarminConnectTooManyRequestsError`, and `GarminConnectConnectionError` separately
 - `webhook.py` — Handles three actions from the watch: `get_states` (paginated entity listing), `call_service` (toggle/control), `get_dashboard` (compact multi-domain summary). Responses use abbreviated keys (`i`, `s`, `n`, `d`) to stay within Garmin's ~8-16KB BLE transfer limit
 
 ### Watch App (`connectiq/garmin-ha-app/`)
@@ -60,3 +60,16 @@ Garmin Watch App  <--webhook HTTP-->  HA Integration (webhook.py)  <-->  HA enti
 - Webhook responses use single-character keys (`s`=status/state, `e`=entities, `i`=entity_id, `n`=name, `d`=domain, `t`=total, `m`=more pages) to minimize payload size for BLE transfer
 - Sensor descriptions in `const.py` use a `source` field that maps to coordinator data dict keys and a `value_key` that maps to the Garmin Connect API response fields (camelCase)
 - The watch app uses `_requestInFlight` guard pattern — only one HTTP request at a time to prevent Garmin BLE queue errors
+
+## garminconnect Library (v0.3.1) Gotchas
+
+- The `Garmin` class exposes its inner client as `client.client` (NOT `client.garth`) — use `client.client.dumps()` / `client.client.loads()` for token serialization
+- For login with stored tokens, pass token data as the `tokenstore` parameter: `client.login(token_data)`
+- MFA flow: create `Garmin(email, password, return_on_mfa=True)`, call `login()`, check if return value is `(mfa_status, None)` with non-None status, then call `client.client.resume_login(None, mfa_code)` to complete
+- Garmin SSO is Cloudflare-protected and aggressively rate-limits (429) — the library tries 4 login strategies per attempt, each counting separately against the limit
+
+## Releasing
+
+- Distributed via HACS — requires a GitHub release tag to download correctly
+- Create releases with: `gh release create vX.Y.Z --target main`
+- Keep `version` in `manifest.json` in sync with the release tag
