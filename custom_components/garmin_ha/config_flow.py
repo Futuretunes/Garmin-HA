@@ -17,6 +17,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 
 from .const import DOMAIN
+from .widget_login import WidgetAuth, WidgetLoginError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
         self._client: Garmin | None = None
         self._email: str = ""
         self._password: str = ""
+        self._widget_auth: WidgetAuth | None = None
 
     async def async_step_user(
         self,
@@ -45,6 +47,7 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             self._email = user_input[CONF_EMAIL]
             self._password = user_input[CONF_PASSWORD]
 
+            # Try standard garminconnect login first
             try:
                 self._client = Garmin(
                     self._email, self._password, return_on_mfa=True
@@ -58,37 +61,43 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 return await self._async_finish_login()
 
-            except GarminConnectAuthenticationError as err:
-                _LOGGER.error("Garmin auth failed: %s", err)
-                errors["base"] = "invalid_auth"
-            except GarminConnectTooManyRequestsError as err:
-                cause = err.__cause__
-                real_status = getattr(
-                    getattr(cause, "response", None), "status_code", None
+            except (
+                GarminConnectTooManyRequestsError,
+                GarminConnectAuthenticationError,
+            ) as err:
+                # Both 429 and auth errors can be false positives from
+                # garminconnect's string-based error classification.
+                # Fall through to widget SSO fallback.
+                _LOGGER.warning(
+                    "Standard Garmin login failed (%s: %s), "
+                    "trying widget SSO fallback",
+                    type(err).__name__, err,
                 )
-                _LOGGER.error(
-                    "Garmin login reported 429 (rate limit). "
-                    "Underlying error: %s (HTTP status=%s, type=%s)",
-                    cause, real_status, type(cause).__name__ if cause else "N/A",
-                )
-                errors["base"] = "too_many_requests"
             except GarminConnectConnectionError as err:
                 _LOGGER.error("Garmin connection failed: %s", err)
                 errors["base"] = "cannot_connect"
+                return self._show_user_form(errors)
             except Exception:
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
+                return self._show_user_form(errors)
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_EMAIL): str,
-                    vol.Required(CONF_PASSWORD): str,
-                }
-            ),
-            errors=errors,
-        )
+            # Widget SSO fallback — bypasses clientId-based rate limiting
+            try:
+                self._widget_auth = WidgetAuth()
+                token_data = await self.hass.async_add_executor_job(
+                    self._widget_auth.login, self._email, self._password
+                )
+                if token_data is None:
+                    # MFA required
+                    return await self.async_step_mfa()
+                return await self._async_finish_login_with_tokens(token_data)
+            except WidgetLoginError as widget_err:
+                _LOGGER.error("Widget SSO fallback also failed: %s", widget_err)
+                self._widget_auth = None
+                errors["base"] = "invalid_auth"
+
+        return self._show_user_form(errors)
 
     async def async_step_mfa(
         self,
@@ -98,13 +107,22 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            mfa_code = user_input[CONF_MFA_CODE]
             try:
-                mfa_code = user_input[CONF_MFA_CODE]
-                await self.hass.async_add_executor_job(
-                    self._client.client.resume_login, None, mfa_code
-                )
-                return await self._async_finish_login()
-            except GarminConnectAuthenticationError:
+                if self._widget_auth:
+                    token_data = await self.hass.async_add_executor_job(
+                        self._widget_auth.submit_mfa, mfa_code
+                    )
+                    return await self._async_finish_login_with_tokens(token_data)
+                else:
+                    await self.hass.async_add_executor_job(
+                        self._client.client.resume_login, None, mfa_code
+                    )
+                    return await self._async_finish_login()
+            except (
+                GarminConnectAuthenticationError,
+                WidgetLoginError,
+            ):
                 errors["base"] = "invalid_mfa"
             except Exception:
                 _LOGGER.exception("Unexpected error during MFA verification")
@@ -125,7 +143,12 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
         token_data = await self.hass.async_add_executor_job(
             self._client.client.dumps
         )
+        return await self._async_finish_login_with_tokens(token_data)
 
+    async def _async_finish_login_with_tokens(
+        self, token_data: str
+    ) -> ConfigFlowResult:
+        """Create the config entry from token data."""
         await self.async_set_unique_id(self._email)
         self._abort_if_unique_id_configured()
 
@@ -143,3 +166,18 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle reauthorization."""
         return await self.async_step_user()
+
+    def _show_user_form(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Show the credentials form."""
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors=errors or {},
+        )
