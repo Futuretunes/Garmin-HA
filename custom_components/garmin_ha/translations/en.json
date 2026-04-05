@@ -8,10 +8,18 @@
           "email": "Email",
           "password": "Password"
         }
+      },
+      "mfa": {
+        "title": "Multi-Factor Authentication",
+        "description": "Enter the verification code sent to your email or authenticator app.",
+        "data": {
+          "mfa_code": "Verification Code"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid credentials",
+      "invalid_mfa": "Invalid verification code",
       "unknown": "An unexpected error occurred"
     },
     "abort": {

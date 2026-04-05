@@ -15,6 +15,8 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+CONF_MFA_CODE = "mfa_code"
+
 
 class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Garmin HA."""
@@ -39,23 +41,18 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             self._password = user_input[CONF_PASSWORD]
 
             try:
-                self._client = await self.hass.async_add_executor_job(
-                    self._try_login, self._email, self._password
+                self._client = Garmin(
+                    self._email, self._password, return_on_mfa=True
                 )
-                token_data = await self.hass.async_add_executor_job(
-                    self._client.garth.dumps
+                mfa_status, _ = await self.hass.async_add_executor_job(
+                    self._client.login
                 )
 
-                await self.async_set_unique_id(self._email)
-                self._abort_if_unique_id_configured()
+                if mfa_status is not None:
+                    return await self.async_step_mfa()
 
-                return self.async_create_entry(
-                    title=self._email,
-                    data={
-                        CONF_EMAIL: self._email,
-                        "token_data": token_data,
-                    },
-                )
+                return await self._async_finish_login()
+
             except GarminConnectAuthenticationError:
                 errors["base"] = "invalid_auth"
             except Exception:
@@ -73,16 +70,56 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_mfa(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle MFA verification step."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                mfa_code = user_input[CONF_MFA_CODE]
+                await self.hass.async_add_executor_job(
+                    self._client.client.resume_login, None, mfa_code
+                )
+                return await self._async_finish_login()
+            except GarminConnectAuthenticationError:
+                errors["base"] = "invalid_mfa"
+            except Exception:
+                _LOGGER.exception("Unexpected error during MFA verification")
+                errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="mfa",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_MFA_CODE): str,
+                }
+            ),
+            errors=errors,
+        )
+
+    async def _async_finish_login(self) -> ConfigFlowResult:
+        """Dump tokens and create the config entry."""
+        token_data = await self.hass.async_add_executor_job(
+            self._client.client.dumps
+        )
+
+        await self.async_set_unique_id(self._email)
+        self._abort_if_unique_id_configured()
+
+        return self.async_create_entry(
+            title=self._email,
+            data={
+                CONF_EMAIL: self._email,
+                "token_data": token_data,
+            },
+        )
+
     async def async_step_reauth(
         self,
         entry_data: dict[str, Any],
     ) -> ConfigFlowResult:
         """Handle reauthorization."""
         return await self.async_step_user()
-
-    @staticmethod
-    def _try_login(email: str, password: str) -> Garmin:
-        """Attempt to log in to Garmin Connect."""
-        client = Garmin(email, password)
-        client.login()
-        return client
