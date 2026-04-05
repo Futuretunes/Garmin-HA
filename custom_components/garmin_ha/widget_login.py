@@ -71,8 +71,11 @@ class WidgetAuth:
         Returns token_data JSON on success, or None if MFA is required
         (call submit_mfa next).
         """
+        _LOGGER.warning("Widget SSO: starting login attempt")
+
         # Step 1: establish SSO cookies
         r = self._session.get(SSO_EMBED_URL, params=SSO_EMBED_PARAMS)
+        _LOGGER.warning("Widget SSO: embed response status=%s", r.status_code)
         if r.status_code == 429:
             raise WidgetLoginError(
                 f"SSO embed endpoint returned 429: {r.text[:200]}"
@@ -85,11 +88,12 @@ class WidgetAuth:
             params=SSO_EMBED_PARAMS,
             headers={"Referer": SSO_EMBED_URL},
         )
+        _LOGGER.warning("Widget SSO: signin page status=%s", r.status_code)
         r.raise_for_status()
 
         csrf = self._extract_csrf(r.text)
         if not csrf:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 "Widget SSO: no CSRF token found, body[:500]=%s",
                 r.text[:500],
             )
@@ -107,6 +111,7 @@ class WidgetAuth:
             },
             headers={"Referer": SSO_SIGNIN_URL},
         )
+        _LOGGER.warning("Widget SSO: login POST status=%s", r.status_code)
         r.raise_for_status()
         self._last_html = r.text
 
@@ -157,7 +162,7 @@ class WidgetAuth:
         # Extract service ticket
         ticket = self._extract_ticket(response)
         if not ticket:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 "Widget SSO: no ticket found. Title=%r, URL=%s, body[:500]=%s",
                 title, response.url, response.text[:500],
             )
@@ -165,7 +170,7 @@ class WidgetAuth:
                 "Could not extract service ticket from SSO response"
             )
 
-        _LOGGER.debug("Widget SSO: got service ticket %s...", ticket[:20])
+        _LOGGER.warning("Widget SSO: got service ticket, exchanging for tokens")
         return self._exchange_ticket(ticket)
 
     def _extract_csrf(self, html: str) -> str | None:
@@ -217,12 +222,12 @@ class WidgetAuth:
                         },
                     )
                 except Exception as exc:
-                    _LOGGER.debug("DI exchange request failed: %s", exc)
+                    _LOGGER.warning("DI exchange request failed: %s", exc)
                     last_error = exc
                     continue
 
                 if r.status_code == 429:
-                    _LOGGER.debug(
+                    _LOGGER.warning(
                         "DI exchange rate limited for %s / %s",
                         client_id, service_url,
                     )
@@ -230,7 +235,7 @@ class WidgetAuth:
                     continue
 
                 if not r.ok:
-                    _LOGGER.debug(
+                    _LOGGER.warning(
                         "DI exchange failed for %s / %s: %s %s",
                         client_id, service_url, r.status_code, r.text[:200],
                     )
@@ -249,7 +254,7 @@ class WidgetAuth:
                     )
                     return token_data
                 except (KeyError, ValueError) as exc:
-                    _LOGGER.debug(
+                    _LOGGER.warning(
                         "DI token parse failed for %s: %s", client_id, exc
                     )
                     last_error = exc

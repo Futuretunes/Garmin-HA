@@ -93,7 +93,11 @@ class GarminHAConfigFlow(ConfigFlow, domain=DOMAIN):
                     return await self.async_step_mfa()
                 return await self._async_finish_login_with_tokens(token_data)
             except WidgetLoginError as widget_err:
-                _LOGGER.error("Widget SSO fallback also failed: %s", widget_err)
+                _LOGGER.error("Widget SSO fallback failed: %s", widget_err)
+                self._widget_auth = None
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Widget SSO fallback crashed")
                 self._widget_auth = None
                 errors["base"] = "invalid_auth"
 
